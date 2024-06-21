@@ -1,4 +1,4 @@
-# ngapost2md ver.[NEO_1.5.2]
+# ngapost2md ver.[NEO_1.6.0]
 
 ngapost2md 是一个将 NGA 论坛帖子转换为 Markdown 格式的工具。它支持快速爬楼并存储回复人、时间和内容，同时支持保存正文图片。
 
@@ -30,9 +30,11 @@ windows
 ```
 > ./ngapost2md -h
 
-使用: ngapost2md tid
+使用: ngapost2md tid [--authorid aid]
 选项与参数说明: 
 tid: 待下载的帖子 tid 号
+aid: 只看某用户 id 发言层，需配合 --authorid 参数
+
 ngapost2md -v, --version     显示版本信息并退出
 ngapost2md -h, --help        显示此帮助信息并退出
 ngapost2md -u, --update      检查最新版本

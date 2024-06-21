@@ -38,7 +38,7 @@ var (
 
 // 这里配置文件和传参都没法改
 var (
-	VERSION  = "1.5.2"      //需要手动改
+	VERSION  = "1.6.0"      //需要手动改
 	BUILD_TS = "1691664141" //无需，GitHub actions会自动填写
 	GIT_REF  = ""           //无需，GitHub actions会自动填写
 	GIT_HASH = ""           //无需，GitHub actions会自动填写
@@ -578,8 +578,7 @@ func (tiezi *Tiezi) fixFloorContent(startFloor_i int) {
 		tiezi.Timestamp = ts()
 	}
 	wg.Wait()
-	elapsedTime := time.Since(startTime) / time.Millisecond
-	log.Println("修正楼层总耗时:", time.Second.Truncate(elapsedTime).String())
+	log.Println("修正楼层总耗时:", time.Since(startTime).Truncate(time.Second).String())
 	// 如果为了调试取消并行的话，上述代码均注释，换成下面的
 	// for i := startFloor_i; i < len(tiezi.Floors); i++ {
 	// 	log.Printf("开始修正第 %02d 楼层", i)
@@ -768,8 +767,7 @@ func (tiezi *Tiezi) Download() {
 		}
 		wg.Wait()
 
-		elapsedTime := time.Since(startTime) / time.Millisecond
-		log.Println("下载所有页面总耗时:", time.Second.Truncate(elapsedTime).String())
+		log.Println("下载所有页面总耗时:", time.Since(startTime).Truncate(time.Second).String())
 		if page_download_limit_triggered {
 			log.Println("单次下载 Page 数已达上限！本次导出完毕后需要多次重新运行才可全部导出此帖内容。")
 		}
