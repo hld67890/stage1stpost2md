@@ -567,7 +567,7 @@ func (tiezi *Tiezi) fixFloorContent(startFloor_i int) {
 	}
 	wg.Wait()
 	elapsedTime := time.Since(startTime) / time.Millisecond
-	log.Printf("修正楼层总耗时: %dms\n", elapsedTime)
+	log.Println("修正楼层总耗时:", time.Second.Truncate(elapsedTime).String())
 	// 如果为了调试取消并行的话，上述代码均注释，换成下面的
 	// for i := startFloor_i; i < len(tiezi.Floors); i++ {
 	// 	log.Printf("开始修正第 %02d 楼层", i)
@@ -745,7 +745,7 @@ func (tiezi *Tiezi) Download() {
 		wg.Wait()
 
 		elapsedTime := time.Since(startTime) / time.Millisecond
-		log.Printf("下载所有页面总耗时: %dms\n", elapsedTime)
+		log.Println("下载所有页面总耗时:", time.Second.Truncate(elapsedTime).String())
 		if page_download_limit_triggered {
 			log.Println("单次下载 Page 数已达上限！本次导出完毕后需要多次重新运行才可全部导出此帖内容。")
 		}
