@@ -117,6 +117,18 @@ func main() {
 
 	nga.BASE_URL = cfg.Section("network").Key("base_url").String()
 	nga.UA = cfg.Section("network").Key("ua").String()
+
+	//核心配置项未更改，拒绝执行
+	if ngaPassportUid == "" || strings.Contains(ngaPassportUid, "MODIFY_ME") {
+		log.Fatalln("配置项配置错误: ngaPassportUid=", ngaPassportUid)
+	}
+	if ngaPassportCid == "" || strings.Contains(ngaPassportCid, "MODIFY_ME") {
+		log.Fatalln("配置项配置错误: ngaPassportCid=", ngaPassportCid)
+	}
+	if nga.UA == "" || strings.Contains(nga.UA, "MODIFY_ME") {
+		log.Fatalln("配置项配置错误: ua=", nga.UA)
+	}
+
 	//默认线程数为2,仅支持1~3
 	nga.CFGFILE_THREAD_COUNT = cfg.Section("network").Key("thread").InInt(2, []int{1, 2, 3})
 	nga.CFGFILE_PAGE_DOWNLOAD_LIMIT = cfg.Section("network").Key("page_download_limit").RangeInt(100, -1, 100)
