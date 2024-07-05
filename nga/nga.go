@@ -178,7 +178,8 @@ func (tiezi *Tiezi) page(page int) {
 	}
 	code, _ := jsonparser.GetInt(resp.Bytes(), "code")
 	if code != 0 {
-		log.Fatalln("nga 返回代码不为0:", code)
+		msg, _ := jsonparser.GetString(resp.Bytes(), "msg")
+		log.Fatalln("nga 返回代码不为0:", code, msg)
 	} else {
 		tiezi.Timestamp = ts()
 
@@ -364,6 +365,15 @@ func (tiezi *Tiezi) fixContent(floor_i int) {
 		for _, it := range re.FindAllString(cont, -1) {
 
 			cont = strings.ReplaceAll(cont, it, anony(it))
+		}
+
+		//ROLL DICE
+		//<div class='dice'><b>ROLL : 1d100</b>=d100(32)=<b>32</b></div>
+		re = regexp.MustCompile(`<div class='dice'><b>ROLL : (.+?)</b>=(.+?)=<b>(.+?)</b></div>`)
+		for _, it := range re.FindAllStringSubmatch(cont, -1) {
+			rollSrc := it[1]
+			rollRt := it[3]
+			cont = strings.ReplaceAll(cont, it[0], fmt.Sprintf(" **【ROLL** : %s= **%s】** ", rollSrc, rollRt))
 		}
 
 		//图片
