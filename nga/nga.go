@@ -477,6 +477,14 @@ func (tiezi *Tiezi) fixContent(floor_i int) {
 			quoteTime := it[2]
 			if len(quoteAuthor) > 7 && quoteAuthor[:7] == `#anony_` {
 				quoteAuthor = anony(quoteAuthor)
+			} else {
+				// 拼一下，以拿到uid
+				reg_str = `\[uid=(\d+?)\]` + quoteAuthor + `\[\/uid\]`
+				re = regexp.MustCompile(reg_str)
+				it := re.FindStringSubmatch(cont)
+				if len(it) >= 2 {
+					quoteAuthor = fmt.Sprintf("%s(%s)", quoteAuthor, it[1])
+				}
 			}
 			cont = strings.ReplaceAll(cont, it[0], `>[jump](#pid0) `+quoteAuthor+`(`+quoteTime+`)`+` 说: `+quoteText+"\n\n")
 			floor.AppendPid = append(floor.AppendPid, 0)
@@ -514,6 +522,14 @@ func (tiezi *Tiezi) fixContent(floor_i int) {
 				quoteTime := it[3]
 				if len(quoteAuthor) > 7 && quoteAuthor[:7] == `#anony_` {
 					quoteAuthor = anony(quoteAuthor)
+				} else {
+					// 拼一下，以拿到uid
+					reg_str = `\[uid=(\d+?)\]` + quoteAuthor + `\[\/uid\]`
+					re = regexp.MustCompile(reg_str)
+					it := re.FindStringSubmatch(cont)
+					if len(it) >= 2 {
+						quoteAuthor = fmt.Sprintf("%s(%s)", quoteAuthor, it[1])
+					}
 				}
 				cont = strings.ReplaceAll(cont, it[0], `>[jump](#pid`+quotePid+`) `+quoteAuthor+`(`+quoteTime+`)`+` 说: `+quoteText+"\n\n")
 				//这里会有原文的，就不append了
@@ -533,6 +549,14 @@ func (tiezi *Tiezi) fixContent(floor_i int) {
 			quoteTime := it[3]
 			if len(quoteAuthor) > 7 && quoteAuthor[:7] == `#anony_` {
 				quoteAuthor = anony(quoteAuthor)
+			} else {
+				// 拼一下，以拿到uid
+				reg_str = `\[uid=(\d+?)\]` + quoteAuthor + `\[\/uid\]`
+				re = regexp.MustCompile(reg_str)
+				it := re.FindStringSubmatch(cont)
+				if len(it) >= 2 {
+					quoteAuthor = fmt.Sprintf("%s(%s)", quoteAuthor, it[1])
+				}
 			}
 			cont = strings.ReplaceAll(cont, it[0], `>[jump](#pid0) `+quoteAuthor+`(`+quoteTime+"):\n\n")
 		}
@@ -549,6 +573,14 @@ func (tiezi *Tiezi) fixContent(floor_i int) {
 			quoteTime := it[3]
 			if len(quoteAuthor) > 7 && quoteAuthor[:7] == `#anony_` {
 				quoteAuthor = anony(quoteAuthor)
+			} else {
+				// 拼一下，以拿到uid
+				reg_str = `\[uid=(\d+?)\]` + quoteAuthor + `\[\/uid\]`
+				re = regexp.MustCompile(reg_str)
+				it := re.FindStringSubmatch(cont)
+				if len(it) >= 2 {
+					quoteAuthor = fmt.Sprintf("%s(%s)", quoteAuthor, it[1])
+				}
 			}
 			replyedText := ":"
 			if CFGFILE_ENHANCE_ORI_REPLY {
@@ -672,7 +704,7 @@ func (tiezi *Tiezi) genMarkdown(localMaxFloor int) {
 			IpLocationStr = "\\(" + floor.IpLocation + "\\)"
 		}
 
-		_, _ = f.WriteString(fmt.Sprintf("----\n\n##### <span id=\"pid%d\">%d.[%d] \\<pid:%d\\> %s by %s%s</span>\n%s", floor.Pid, floor.Lou, floor.LikeNum, floor.Pid, ts2t(floor.Timestamp), floor.Username, IpLocationStr, floor.Content))
+		_, _ = f.WriteString(fmt.Sprintf("----\n\n##### <span id=\"pid%d\">%d.[%d] \\<pid:%d\\> %s by %s(%d)%s</span>\n%s", floor.Pid, floor.Lou, floor.LikeNum, floor.Pid, ts2t(floor.Timestamp), floor.Username, floor.UserId, IpLocationStr, floor.Content))
 
 		if floor.Comments != nil {
 			_, _ = f.WriteString("\n\n*---下挂评论---*")
@@ -681,7 +713,7 @@ func (tiezi *Tiezi) genMarkdown(localMaxFloor int) {
 					//为了评论从1楼开始，评论[0]恒为为空
 					continue
 				}
-				_, _ = f.WriteString(fmt.Sprintf("\n\n%d.[%d] \\<pid:%d\\>%s by %s:\n%s", comment.Lou, comment.LikeNum, comment.Pid, ts2t(comment.Timestamp), comment.Username, comment.Content))
+				_, _ = f.WriteString(fmt.Sprintf("\n\n%d.[%d] \\<pid:%d\\>%s by %s(%d):\n%s", comment.Lou, comment.LikeNum, comment.Pid, ts2t(comment.Timestamp), comment.Username, comment.UserId, comment.Content))
 			}
 		}
 
@@ -694,29 +726,6 @@ func responseController() {
 		log.Println(rc)
 	}
 }
-
-// // 默认清空内容
-// func (tiezi *Tiezi) SaveAsFile() {
-// 	//为节省大小和导入导出压力，清空具体回复内容
-// 	copy := tiezi
-// 	for i := range copy.Floors {
-// 		copy.Floors[i].Content = ""
-// 		for ii := range copy.Floors[i].Comments {
-// 			copy.Floors[i].Comments[ii].Content = ""
-// 		}
-// 	}
-// 	result, err := json.Marshal(copy)
-// 	if err != nil {
-// 		fmt.Println(err)
-// 	}
-// 	fileName := `./` + cast.ToString(copy.Tid) + `/tiezi.json`
-// 	if _, err := os.Stat(fileName); os.IsNotExist(err) {
-// 		_, _ = os.Create(fileName)
-// 	}
-// 	f, _ := os.OpenFile(fileName, os.O_APPEND|os.O_WRONLY, 0666)
-// 	_, _ = f.Write(result)
-// 	defer f.Close()
-// }
 
 // 会首先调用FindFolderNameByTid，确定本地没有相关文件夹再返回指定格式文件名。否则返回本地已有文件名
 func (tiezi *Tiezi) GetNeededFolderName() string {
