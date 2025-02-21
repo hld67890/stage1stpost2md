@@ -178,7 +178,8 @@ func (tiezi *Tiezi) page(page int) {
 	}
 	code, _ := jsonparser.GetInt(resp.Bytes(), "code")
 	if code != 0 {
-		log.Fatalln("nga 返回代码不为0:", code)
+		msg, _ := jsonparser.GetString(resp.Bytes(), "msg")
+		log.Fatalln("nga 返回代码不为0:", code, msg)
 	} else {
 		tiezi.Timestamp = ts()
 
@@ -364,6 +365,26 @@ func (tiezi *Tiezi) fixContent(floor_i int) {
 		for _, it := range re.FindAllString(cont, -1) {
 
 			cont = strings.ReplaceAll(cont, it, anony(it))
+		}
+
+		//ROLL DICE
+		//<div class='dice'><b>ROLL : 1d100</b>=d100(32)=<b>32</b></div>
+		re = regexp.MustCompile(`<div class='dice'><b>ROLL : (.+?)</b>=(.+?)=<b>(.+?)</b></div>`)
+		for _, it := range re.FindAllStringSubmatch(cont, -1) {
+			rollSrc := it[1]
+			rollRt := it[3]
+			cont = strings.ReplaceAll(cont, it[0], fmt.Sprintf(" **【ROLL** : %s= **%s】** ", rollSrc, rollRt))
+		}
+
+		//collapse 折叠
+		//<div class="foldBox no"><div class="collapse_btn"><a href="javascript:;" onclick="collapse(this);">+</a>外层看到的 ...</div><span class="collapse_content" id="foldCnt">里面</span></div>
+		re = regexp.MustCompile(`<div class="foldBox no"><div class="collapse_btn"><a href="javascript:;" onclick="collapse\(this\);">\+</a>(.+?) ...</div><span class="collapse_content" id="foldCnt">(.+?)</span></div>`)
+		for _, it := range re.FindAllStringSubmatch(cont, -1) {
+			outTxt := it[1]
+			inTxt := it[2]
+			rt := fmt.Sprintf("<details>\n  <summary>%s</summary>\n  <pre>%s</pre>\n</details>", outTxt, strings.ReplaceAll(inTxt, "\n", "<br>"))
+
+			cont = strings.ReplaceAll(cont, it[0], rt)
 		}
 
 		//图片
@@ -612,11 +633,10 @@ func (tiezi *Tiezi) genMarkdown(localMaxFloor int) {
 	}
 
 	f, err := os.OpenFile(mdFilePath, os.O_APPEND|os.O_WRONLY, 0666)
-	defer f.Close()
 	if err != nil {
 		log.Fatalf("创建或打开 .md 文件失败：%v", err)
 	}
-
+	defer f.Close()
 	for i := localMaxFloor; i < len(tiezi.Floors); i++ {
 		floor := &tiezi.Floors[i]
 		if floor.Lou == -1 {
