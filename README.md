@@ -1,4 +1,4 @@
-# ngapost2md ver.[NEO_1.6.0]
+# ngapost2md ver.[NEO_1.7.0]
 
 ngapost2md 是一个将 NGA 论坛帖子转换为 Markdown 格式的工具。它支持快速爬楼并存储回复人、时间和内容，同时支持保存正文图片。
 
@@ -7,6 +7,9 @@ ngapost2md 是一个将 NGA 论坛帖子转换为 Markdown 格式的工具。它
 **此为 2023 年由 Go 语言重写的版本。倘若需要旧版 Python 版代码（不再维护），请切换分支至 LEGACY**
 
 <img src="README.assets/gen_md_demo.png" width="900px" alt="gen_md_demo">
+
+## ngamm - 为 ngapost2md 提供的一个简单的管理工具 (友好广告)
+- https://github.com/i2534/ngamm
 
 ## 使用说明
 1. 下载并解压发布版本的压缩包。
@@ -84,4 +87,5 @@ ngapost2md --gen-config-file 生成默认配置文件于 config.ini 并退出
 
 - 特别感谢 [zsq @oarinv](https://github.com/oarinv) 的协助！
 - 特别感谢 [crella6](https://github.com/crella6) 的捉虫以及意见！
+- 特别感谢 [i2534](https://github.com/i2534) 的意见以及 [ngamm](https://github.com/i2534/ngamm)！
 - 感谢 [proItheus](https://github.com/proItheus) 对此项目的帮助！
