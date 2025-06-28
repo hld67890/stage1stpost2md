@@ -5,15 +5,17 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/buger/jsonparser"
+	"github.com/PuerkitoBio/goquery"
 	"github.com/imroc/req/v3"
 	"github.com/panjf2000/ants/v2"
 	"github.com/spf13/cast"
@@ -23,15 +25,12 @@ import (
 // 这里是配置文件可以改的
 var (
 	CFGFILE_THREAD_COUNT              = 2
-	CFGFILE_GET_IP_LOCATION           = false //	获取ip地址
-	CFGFILE_ENHANCE_ORI_REPLY         = false //	功能见 #35
-	CFGFILE_PAGE_DOWNLOAD_LIMIT       = 100   //	限制单次下载的页数 #56
+	CFGFILE_PAGE_DOWNLOAD_LIMIT       = 100 //	限制单次下载的页数 #56
 	CFGFILE_USE_TITLE_AS_FOLDER_NAME  = false
 	CFGFILE_USE_TITLE_AS_MD_FILE_NAME = false
-	CFGFILE_USE_LOCAL_SMILE_PIC       = false       // 使用本地表情 #58
-	CFGFILE_LOCAL_SMILE_PIC_PATH      = "../smile/" //本地表情路径 #58
-
 )
+
+var Directory string
 
 // 这里传参可以改
 // var ()
@@ -53,24 +52,37 @@ var (
 
 // ldflags 区域。GitHub Actions 编译时会使用 ldflags 来修改如下值：
 var (
-	DEBUG_MODE = "1" //GitHub Actions 打包的时候会修改为"0"。本地打包可以 go build -ldflags "-X 'github.com/ludoux/ngapost2md/nga.DEBUG_MODE=0'" main.go
+	DEBUG_MODE = "1" //GitHub Actions 打包的时候会修改为"0"。本地打包可以 go build -ldflags "-X 'github.com/hld67890/stage1stpost2md/nga.DEBUG_MODE=0'" main.go
 	/**
 	 * DEBUG_MODE 为true时会:
 	 * 启动时禁用自动版本检查
 	 */
 )
 
+type Goose struct {
+	id     string
+	idlink string
+	num    string
+	reason string
+}
+
 type Floor struct {
-	Lou        int
-	Pid        int
-	Timestamp  int64
-	Username   string
-	IpLocation string
-	UserId     int
-	Content    string
-	LikeNum    int
-	AppendPid  []int
-	Comments   Floors
+	Lou          int
+	Pid          int
+	Timestamp    int64
+	Username     string
+	UserId       int
+	Content      string
+	JiaGoose     []Goose
+	JiaGooseFlag bool
+	TotalGoose   string
+	Contenthtml  *goquery.Selection
+	JiaGoosehtml *goquery.Selection
+	Good         int
+	Power        int
+	Reply        int
+	Regtime      string
+	Deleted      bool
 }
 type Floors []Floor
 type Tiezi struct {
@@ -78,7 +90,7 @@ type Tiezi struct {
 	AuthorId        int //这个是用户传入的希望仅下载某用户id的发言贴参数
 	Title           string
 	TitleFolderSafe string
-	Catelogy        string
+	Catelogy        string //真不是category？？？
 	Username        string
 	UserId          int
 	WebMaxPage      int
@@ -86,7 +98,6 @@ type Tiezi struct {
 	LocalMaxFloor   int
 	FloorCount      int    //包含主楼
 	Floors          Floors //主楼为[0]
-	HotPosts        Floors
 	Timestamp       int64  //page() fixFloorContent()  中会更新
 	Version         string //这个是软件的version
 	Assets          map[string]string
@@ -97,60 +108,140 @@ var responseChannel = make(chan string, 15)
 /**
  * @description: 分析floors原始数据并填充进floors里
  * @param {[]byte} resp 接口下来的原始数据
- * @param {bool} isComments 是否是下挂评论。假如是的话则自增楼层
  * @return {*}
  */
-func (it *Floors) analyze(resp []byte, isComments bool) {
-	lou_comment := 1
-	jsonparser.ArrayEach(resp, func(value []byte, _ jsonparser.ValueType, _ int, _ error) {
-		value_int, _ := jsonparser.GetInt(value, "lou")
+func (it *Floors) analyze(postlist *goquery.Selection) {
+	// fmt.Println("posts@@", postlist.Text())
+	postlist.Children().Filter("div:not(.pl)").Each(func(i int, post *goquery.Selection) {
+		// fmt.Println("@@@@@@@@", i, post.Text())
+		floor_count := post.Find("td.plc div.pi strong a em").Text()
+
 		var lou int
-		if !isComments {
-			lou = cast.ToInt(value_int)
+		if floor_count == "" {
+			lou = 0
+		} else if floor_count == "顶" {
+			//这论坛还能置顶帖子？？？tid=1826103
+			floor_count = post.Find("td.plc div.pi strong a").Text()
+			lou, _ = strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(floor_count, "\n顶 来自 "), "#"))
+			lou -= 1
+			// fmt.Println("@@@@@@@@", i, lou, floor_count)
 		} else {
-			lou = lou_comment
+			lou = cast.ToInt(floor_count) - 1
 		}
 		// 根据楼数补充Floors
 		for len(*it) < lou+1 {
 			(*it) = append((*it), Floor{Lou: -1})
 		}
-
+		// fmt.Println("@@@@@@@@", i, lou, floor_count)
 		curFloor := &(*it)[lou]
 
 		//楼层
 		curFloor.Lou = lou
 
 		//PID
-		value_int, _ = jsonparser.GetInt(value, "pid")
-		curFloor.Pid = cast.ToInt(value_int)
+		id, exists := post.Attr("id")
+		if !exists {
+			id = "post_-1"
+		}
+		id = strings.TrimPrefix(id, "post_")
+		curFloor.Pid = cast.ToInt(id)
+		// fmt.Println("@@@@@@@@", i, curFloor.Pid)
 
 		//时间戳
-		value_int, _ = jsonparser.GetInt(value, "postdatetimestamp")
-		curFloor.Timestamp = value_int
+		timestamp := strings.TrimPrefix(post.Find("td.plc div.pi div.pti div.authi em").Text(), "发表于 ")
+		curFloor.Timestamp, _ = TimeStringToTimestamp(timestamp)
+		// fmt.Println("@@@@@@@@", timestamp, curFloor.Timestamp)
+
+		userinfo := post.Find("td.pls div.pls div.pi div.authi a")
 
 		//用户名
-		value_str, _ := jsonparser.GetString(value, "author", "username")
-		curFloor.Username = value_str
+		username := userinfo.Text()
+		curFloor.Username = username
+		// fmt.Println("@@@@@@@@", username)
 
 		//用户id
-		value_int, _ = jsonparser.GetInt(value, "author", "uid")
-		curFloor.UserId = cast.ToInt(value_int)
+		idstr, exists := userinfo.Attr("href")
+		if !exists {
+			idstr = "space-uid-0.html"
+		}
+		userid, _ := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(idstr, "space-uid-"), ".html"))
+		curFloor.UserId = cast.ToInt(userid)
+		// fmt.Println("@@@@@@@@", curFloor.UserId)
+
+		//已被删帖
+		deleted := post.Find("div.pct div.pcb div.locked")
+		if deleted.Length() > 0 {
+			curFloor.Deleted = true
+		}
 
 		//内容
-		value_str, _ = jsonparser.GetString(value, "content")
-		curFloor.Content = value_str
-
-		//点赞数
-		value_int, _ = jsonparser.GetInt(value, "vote_good")
-		curFloor.LikeNum = cast.ToInt(value_int)
-
-		//下挂comments
-		value_byte, dataType, _, _ := jsonparser.Get(value, "comments")
-		if dataType != jsonparser.NotExist {
-			curFloor.Comments.analyze(value_byte, true)
+		content := post.Find("div.pct div.pcb div.pcbs")
+		if content.Length() == 0 {
+			content = post.Find("div.pct div.pcb div.t_fsz")
 		}
-		lou_comment = lou_comment + 1
+		curFloor.Contenthtml = content
+		// fmt.Println("@@@@@@@@", lou, curFloor.Contenthtml)
+
+		//加鹅情况
+		//需要上面的id
+		//如果没有加鹅记录就找不到
+		jiaGoose := post.Find("div.pct div.pcb dl#ratelog_" + id)
+		// fmt.Println("@@@@@@@@", lou, id, jiaGoose.Length())
+		if jiaGoose.Length() != 0 {
+			link, _ := jiaGoose.Find("p.ratc a").Attr("href")
+			// fmt.Println("@@@@@@@@", lou, link, jiaGoose.Find("p.ratc a").Text())
+			link = strings.TrimSuffix(strings.TrimPrefix(link, "\""), "\"")
+			resp, err := Client.R().Post("2b/" + link)
+			if err != nil {
+				log.Println(err.Error())
+			} else {
+				bodyBytes, err := io.ReadAll(resp.Body)
+				if err != nil {
+					log.Println(err.Error())
+				}
+				doc, err := goquery.NewDocumentFromReader(strings.NewReader(string(bodyBytes)))
+				if err != nil {
+					log.Println(err.Error())
+					return
+				}
+				curFloor.JiaGooseFlag = true
+				curFloor.JiaGoosehtml = doc.Find("div.floatwrap table.list")
+
+				re := regexp.MustCompile(`战斗力\s*(.*?)\s*鹅`)
+				matches := re.FindStringSubmatch(doc.Find("div.pns").Text())
+				if len(matches) > 1 {
+					curFloor.TotalGoose = matches[1]
+				}
+				// fmt.Println("@@@@@@@@", doc.Find("div.pns").Text(), "@@@", curFloor.TotalGoose)
+			}
+		}
+
+		//精华战斗力回帖
+		gprElement := post.Find("div.tns table")
+		good, _ := strconv.Atoi(strings.TrimSuffix(gprElement.Children().Eq(0).Children().Eq(0).Children().Eq(0).Text(), "精华"))
+		power, _ := strconv.Atoi(strings.TrimSuffix(gprElement.Children().Eq(0).Children().Eq(0).Children().Eq(1).Text(), "战斗力"))
+		reply, _ := strconv.Atoi(strings.TrimSuffix(gprElement.Children().Eq(0).Children().Eq(0).Children().Eq(2).Text(), "回帖"))
+		// fmt.Println("@@@@@@@@", good, power, reply)
+		curFloor.Good = good
+		curFloor.Power = power
+		curFloor.Reply = reply
+
+		//注册时间
+		regtime := post.Find("div.i div.cl p").Slice(2, 3)
+		curFloor.Regtime = strings.TrimPrefix(regtime.Text(), "注册时间  ")
+		// fmt.Println("@@@@@@@@", curFloor.Regtime)
 	})
+
+	// 	//点赞数
+	// 	value_int, _ = jsonparser.GetInt(value, "vote_good")
+	// 	curFloor.LikeNum = cast.ToInt(value_int)
+
+	// 	//下挂comments
+	// 	value_byte, dataType, _, _ := jsonparser.Get(value, "comments")
+	// 	if dataType != jsonparser.NotExist {
+	// 		curFloor.Comments.analyze(value_byte, true)
+	// 	}
+	// })
 }
 
 /**
@@ -166,66 +257,94 @@ func (tiezi *Tiezi) page(page int) {
 			"page":     cast.ToString(page),
 			"tid":      cast.ToString(tiezi.Tid),
 			"authorid": cast.ToString(tiezi.AuthorId),
-		}).Post("app_api.php?__lib=post&__act=list")
+		}).Post("2b/forum.php?mod=viewthread")
 	} else {
 		resp, err = Client.R().SetFormData(map[string]string{
 			"page": cast.ToString(page),
 			"tid":  cast.ToString(tiezi.Tid),
-		}).Post("app_api.php?__lib=post&__act=list")
+		}).Post("2b/forum.php?mod=viewthread")
 	}
 	if err != nil {
 		log.Println(err.Error())
 	}
-	code, _ := jsonparser.GetInt(resp.Bytes(), "code")
-	if code != 0 {
-		msg, _ := jsonparser.GetString(resp.Bytes(), "msg")
-		log.Fatalln("nga 返回代码不为0:", code, msg)
-	} else {
-		tiezi.Timestamp = ts()
 
-		//标题
-		value_str, _ := jsonparser.GetString(resp.Bytes(), "tsubject")
-		tiezi.Title = value_str
-		tiezi.TitleFolderSafe = ToSaveFilename(tiezi.Title)
+	bodyBytes, err := io.ReadAll(resp.Body)
+	// log.Printf("http response %s", string(bodyBytes))
 
-		//分区名
-		value_str, _ = jsonparser.GetString(resp.Bytes(), "forum_name")
-		tiezi.Catelogy = value_str
-
-		//作者
-		value_str, _ = jsonparser.GetString(resp.Bytes(), "tauthor")
-		tiezi.Username = value_str
-
-		//作者id
-		value_int, _ := jsonparser.GetInt(resp.Bytes(), "tauthorid")
-		tiezi.UserId = cast.ToInt(value_int)
-
-		//总页数
-		value_int, _ = jsonparser.GetInt(resp.Bytes(), "totalPage")
-		tiezi.WebMaxPage = cast.ToInt(value_int)
-		if CFGFILE_PAGE_DOWNLOAD_LIMIT > 0 && tiezi.WebMaxPage > (tiezi.LocalMaxPage+CFGFILE_PAGE_DOWNLOAD_LIMIT) {
-			tiezi.WebMaxPage = tiezi.LocalMaxPage + CFGFILE_PAGE_DOWNLOAD_LIMIT
-			page_download_limit_triggered = true
-		}
-
-		//楼层数，楼主也算一层
-		value_int, _ = jsonparser.GetInt(resp.Bytes(), "vrows")
-		tiezi.FloorCount = cast.ToInt(value_int - 1)
-
-		//初始化floors个数
-		if tiezi.Floors == nil || len(tiezi.Floors) == 0 {
-			tiezi.Floors = make([]Floor, tiezi.FloorCount)
-			for i := range tiezi.Floors {
-				tiezi.Floors[i].Lou = -1
-			}
-		}
-		value_byte, dataType, _, _ := jsonparser.Get(resp.Bytes(), "hot_post")
-		if dataType != jsonparser.NotExist {
-			tiezi.HotPosts.analyze(value_byte, false)
-		}
-		value_byte, _, _, _ = jsonparser.Get(resp.Bytes(), "result")
-		tiezi.Floors.analyze(value_byte, false)
+	if err != nil {
+		log.Println(err.Error())
 	}
+
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(string(bodyBytes)))
+	if err != nil {
+		log.Println(err.Error())
+		return
+	}
+
+	tiezi.Timestamp = ts()
+
+	// 标题
+	value_str := doc.Find("span#thread_subject").Text()
+	tiezi.Title = value_str
+	tiezi.TitleFolderSafe = ToSaveFilename(tiezi.Title)
+	log.Printf("标题 %s", tiezi.Title)
+
+	//分区名
+	value := doc.Find("div#pt").Find("a")
+	if value.Length() >= 4 {
+		group := value.Slice(2, 3).Text()
+		category := value.Slice(3, 4).Text()
+		tiezi.Catelogy = group + "-" + category
+	} else {
+		tiezi.Catelogy = "未知分区"
+	}
+	log.Printf("分区 %s", tiezi.Catelogy)
+
+	//好像用不上
+	// //作者
+	// value_str, _ = jsonparser.GetString(resp.Bytes(), "tauthor")
+	// tiezi.Username = value_str
+
+	// //作者id
+	// value_int, _ := jsonparser.GetInt(resp.Bytes(), "tauthorid")
+	// tiezi.UserId = cast.ToInt(value_int)
+
+	//总页数
+	value_str = doc.Find("div.pgt div.pg span").Text()
+	parts := strings.Fields(value_str)
+	if len(parts) < 2 {
+		tiezi.WebMaxPage = 1
+	} else {
+		num, _ := strconv.Atoi(parts[len(parts)-2])
+		tiezi.WebMaxPage = cast.ToInt(num)
+	}
+	if CFGFILE_PAGE_DOWNLOAD_LIMIT > 0 && tiezi.WebMaxPage > (tiezi.LocalMaxPage+CFGFILE_PAGE_DOWNLOAD_LIMIT) {
+		tiezi.WebMaxPage = tiezi.LocalMaxPage + CFGFILE_PAGE_DOWNLOAD_LIMIT
+		page_download_limit_triggered = true
+	}
+	log.Printf("页数 %d", tiezi.WebMaxPage)
+
+	//楼层数，楼主也算一层。这里只需要保存一次总楼数，s1里面只有第一页会显示总楼数，其他页时候就忽略这一项。不要开多线程，下面的初始化floors数会出问题
+	//bug：只看楼主的时候还是会显示所有楼层数量，输出的时候也会后空白楼层（变成去层数的max了，应该没问题了，开多线程也应该可以了）
+	// if page == 1 {
+	// 	value_str = doc.Find("span.xi1").Slice(1, 2).Text()
+	// 	num, _ := strconv.Atoi(value_str)
+	// 	tiezi.FloorCount = cast.ToInt(num + 1)
+	// 	log.Printf("楼层数 %d", tiezi.FloorCount)
+	// }
+
+	// //初始化floors个数
+	// if len(tiezi.Floors) == 0 {
+	// 	tiezi.Floors = make([]Floor, tiezi.FloorCount)
+	// 	for i := range tiezi.Floors {
+	// 		tiezi.Floors[i].Lou = -1
+	// 	}
+	// }
+
+	value_items := doc.Find("div#postlist")
+	tiezi.Floors.analyze(value_items)
+
+	tiezi.FloorCount = len(tiezi.Floors)
 }
 
 /**
@@ -257,14 +376,14 @@ func (tiezi *Tiezi) InitFromLocal(tid int, authorId int) {
 			log.Fatalln(fileName, "文件丢失，软件将退出。")
 		}
 	}
-	folderName := FindFolderNameByTid(tid, authorId)
+	folderName := FindFolderNameByTid(tid, authorId, Directory)
 	if folderName == "" {
 		log.Fatalln("找不到本地 tid 文件夹，软件将退出。")
 	}
-	processFileName := fmt.Sprintf("./%s/process.ini", folderName)
+	processFileName := fmt.Sprintf("%s/process.ini", folderName)
 	checkFileExistence(processFileName)
 
-	assetsFileName := fmt.Sprintf("./%s/assets.json", folderName)
+	assetsFileName := fmt.Sprintf("%s/assets.json", folderName)
 	checkFileExistence(assetsFileName)
 
 	jsonBytes, _ := os.ReadFile(assetsFileName)
@@ -305,99 +424,129 @@ func (tiezi *Tiezi) findFloorByPid(pid int) *Floor {
 }
 
 /**
- * @description: 由bbcode转md，以及下载图片、转化表情等
- * @param {int} floor_i floor下标
+ * @description: 处理帖子正文内容。
+ * @description: 不支持表格，太离谱了。论坛的表格里面可以嵌套列表和引用，markdown不支持。表格会丢掉格式把内容下载下来。
+ * @description: 二手交易的格式会比较乱，但是因为不常用，不管了。
+ * @description: 附件格式上传的图片会有一些冗余信息。非图片附件不会自动下载，只有链接（没人在这上传附件吧）。
+ * @description: 重复图片只会下载一次
+ * @description: 帖子示例：tid=2244111，样式大全；tid=1826103，置顶帖子
+ * @description: tid=2253699，多选，公开投票；tid=2204769，多选，投票后可见；tid=2253581，单选，投票后可见；
+ * @description: tid=2249069，被删贴
+ * @description: tid=2253696，二手区
+ * @param {*goquery.Selection} doc 帖子正文的html对象
+ * @param {int} indent 调试用缩进
+ * @param {*map[string]string} assets 保存图片资源
+ * @param {*Tiezi} tiezi 原帖子指针
+ * @param {*Floor} floor 原楼层指针
+ * @param {string} newline 是否处于块引用、无序列表、有序列表中，支持嵌套
+ * @param {string} listType 当前元素的列表类型，取值为无序列表unorderList，有序列表orderlist，代码块和其他
  * @return {*}
  */
-func (tiezi *Tiezi) fixContent(floor_i int) {
-	/*此接口(app_api)与旧接口不太相同，有些源码格式和网页端看到的不一样！
-	 *1. 疑似匿名直接显示
-	 *2. 删除线有变
-	 *3. quote reply等，[b]变化；假如是匿名用户，就不会有 uid框框
-	 */
-	//tid int, assets *(map[string]string)
-	assets := &tiezi.Assets
-	oriFloor := &tiezi.Floors[floor_i]
-	floor := &tiezi.Floors[floor_i]
-	curCommentI := -1
+func parseAndListStructured(doc *goquery.Selection, indent int, assets *map[string]string, tiezi *Tiezi, floor *Floor, newline string, listType string) {
+	var stopFlag bool = false
+	doc.Contents().Each(func(i int, s *goquery.Selection) {
+		if stopFlag {
+			return
+		}
 
-	//循环尾部有判断是否有comments且是否进去的操作，请注意
-	for {
-		//假如要获取IP位置则在此处获取
-		if CFGFILE_GET_IP_LOCATION {
-			resp, err := Client.R().SetFormData(map[string]string{
-				"uid": cast.ToString(floor.UserId),
-			}).Post("nuke.php?__lib=ucp&__act=get&__output=8")
-			if err != nil {
-				log.Println(err.Error())
-			} else {
-				value_str, err := jsonparser.GetString(resp.Bytes(), "data", "0", "ipLoc")
-				if err != nil {
-					log.Println("获取用户IP位置失败: " + err.Error())
-				} else {
-					floor.IpLocation = value_str
+		// 跳过纯文本节点（只包含空白字符的）
+		if goquery.NodeName(s) == "#text" {
+			if strings.TrimSpace(s.Text()) == "" {
+				return
+			}
+		}
+
+		// // 打印缩进
+		// fmt.Print(strings.Repeat("  ", indent))
+
+		// 处理不同类型的节点
+		switch goquery.NodeName(s) {
+		case "#text":
+			//文字
+			(*floor).Content += s.Text()
+			// fmt.Printf("文本: %q\n", strings.TrimSpace(s.Text()))
+		case "blockquote":
+			// fmt.Printf("引用块\n")
+			//引用块
+			(*floor).Content += "> "
+			parseAndListStructured(s, indent+1, assets, tiezi, floor, newline+"> ", "")
+			(*floor).Content += "\n" + newline
+		case "br":
+			// fmt.Printf("换行\n")
+			//换行
+			(*floor).Content += "\n" + newline
+		case "font":
+			// fmt.Printf("字体设置\n")
+			//字体大小颜色
+			font := s.Get(0)
+			Key := ""
+			Val := ""
+			for _, attr := range font.Attr {
+				Key = attr.Key
+				Val = attr.Val
+				if Val[0] != '"' {
+					Val = "\"" + Val + "\""
 				}
 			}
-		}
-		//获取IP位置结束
 
-		replacements := map[string]string{
-			`\u0026`:      "&",
-			`\u003c`:      "<",
-			`\u003e`:      ">",
-			`&amp;#160;`:  " ",
-			`<br/>`:       "\n",
-			`<br>`:        "\n",
-			`&lt;br/&gt;`: "\n",
-			`&lt;br&gt;`:  "\n",
-		}
-
-		cont := floor.Content
-		for old, new := range replacements {
-			cont = strings.ReplaceAll(cont, old, new)
-		}
-
-		//匿名
-		if len(floor.Username) > 7 && floor.Username[:7] == `#anony_` {
-			floor.Username = anony(floor.Username)
-		}
-		re := regexp.MustCompile(`#anony_.{32}`)
-		for _, it := range re.FindAllString(cont, -1) {
-
-			cont = strings.ReplaceAll(cont, it, anony(it))
-		}
-
-		//ROLL DICE
-		//<div class='dice'><b>ROLL : 1d100</b>=d100(32)=<b>32</b></div>
-		re = regexp.MustCompile(`<div class='dice'><b>ROLL : (.+?)</b>=(.+?)=<b>(.+?)</b></div>`)
-		for _, it := range re.FindAllStringSubmatch(cont, -1) {
-			rollSrc := it[1]
-			rollRt := it[3]
-			cont = strings.ReplaceAll(cont, it[0], fmt.Sprintf(" **【ROLL** : %s= **%s】** ", rollSrc, rollRt))
-		}
-
-		//collapse 折叠
-		//<div class="foldBox no"><div class="collapse_btn"><a href="javascript:;" onclick="collapse(this);">+</a>外层看到的 ...</div><span class="collapse_content" id="foldCnt">里面</span></div>
-		re = regexp.MustCompile(`<div class="foldBox no"><div class="collapse_btn"><a href="javascript:;" onclick="collapse\(this\);">\+</a>(.+?) ...</div><span class="collapse_content" id="foldCnt">(.+?)</span></div>`)
-		for _, it := range re.FindAllStringSubmatch(cont, -1) {
-			outTxt := it[1]
-			inTxt := it[2]
-			rt := fmt.Sprintf("<details>\n  <summary>%s</summary>\n  <pre>%s</pre>\n</details>", outTxt, strings.ReplaceAll(inTxt, "\n", "<br>"))
-
-			cont = strings.ReplaceAll(cont, it[0], rt)
-		}
-
-		//图片
-		re = regexp.MustCompile(`\[img\](.+?)\[/img\]`)
-		for _, it := range re.FindAllStringSubmatch(cont, -1) {
-			url := it[1]
-			if url[0:2] == "./" {
-				url = "https://img.nga.178.com/attachments/" + url[2:]
+			var defaultSetting bool = false
+			if Key == "face" && Val == `"&amp;quot;"` {
+				defaultSetting = true //看起来是没用的字体设置，跳过
 			}
-			url = strings.ReplaceAll(url, ".medium.jpg", "")
+			if Key == "face" && Val == `"&quot;"` {
+				defaultSetting = true //默认字体颜色
+			}
+			if Key == "face" && Val == `"&quot"` {
+				defaultSetting = true //默认字体颜色
+			}
+			if Key == "color" && Val == `"#333333"` {
+				defaultSetting = true //默认字体颜色
+			}
+			if Key == "style" && Val == `"color:rgb(51, 51, 51)"` {
+				defaultSetting = true //默认字体颜色
+			}
+			if Key == "color" && Val == `"#4183c4"` {
+				defaultSetting = true //默认超链接颜色
+			}
+			if Key == "style" && Val == `"font-size:16px"` {
+				defaultSetting = true //默认字体大小
+			}
+			// fmt.Printf("@@@@@ %s %s\n", Key, Val)
+
+			if Key != "" && !defaultSetting {
+				(*floor).Content += "<font " + Key + "=" + Val + ">"
+			}
+			parseAndListStructured(s, indent+1, assets, tiezi, floor, newline, "")
+			if Key != "" && !defaultSetting {
+				(*floor).Content += "</font>"
+			}
+		case "strong":
+			// fmt.Printf("加粗\n")
+			//加粗
+			(*floor).Content += "<strong>"
+			parseAndListStructured(s, indent+1, assets, tiezi, floor, newline, "")
+			(*floor).Content += "</strong>"
+		case "img":
+			//图片
+			//不管图片缩放了，直接贴上来
+			//上传的图片的地址在file属性里面，但是有缩放的时候好像会有src属性的占位符
+			//表情包的地址在src属性里面
+			//用附件方式上传的图片也能解析出来，但是会有无用的额外信息显示
+			var source string
+			var exists bool
+			source, exists = s.Attr("file")
+			if !exists {
+				source, exists = s.Attr("src")
+				if !exists {
+					log.Printf("未找到图片链接")
+				}
+			}
+			url := source
 			sha := sha256.Sum256([]byte(url))
 			shaStr := hex.EncodeToString(sha[:])
 			shorted := shaStr[2:8] + url[len(url)-6:]
+			//防止文件名太短，包括了上一个目录的"/"
+			shorted = strings.ReplaceAll(shorted, "/", "_")
 			var fileName string
 
 			mutex.Lock()
@@ -409,202 +558,166 @@ func (tiezi *Tiezi) fixContent(floor_i int) {
 			} else {
 				fileName = cast.ToString(floor.Lou) + "_" + shorted
 				(*assets)[shorted] = fileName
-
 			}
-
 			if !ok {
 				mutex.Unlock()
 				time.Sleep(time.Millisecond * time.Duration(DELAY_MS))
-				log.Println("下载图片:", fileName)
-				downloadAssets(url, `./`+tiezi.GetNeededFolderName()+`/`+fileName)
-				//log.Println("下载图片成功:", fileName)
+				// log.Println("@@@@ 下载图片:", url, tiezi.GetNeededFolderName(), fileName)
+				downloadAssets(url, tiezi.GetNeededFolderName()+`/`+fileName)
+				// log.Println("下载图片成功:", fileName)
 			} else {
 				mutex.Unlock()
 			}
-			cont = strings.ReplaceAll(cont, `[img]`+it[1]+`[/img]`, `![img](./`+fileName+`)`)
-		}
+			(*floor).Content += `![img](./` + fileName + `)`
 
-		//表情
-		re = regexp.MustCompile(`\[s\:.+?\:.+?\]`)
-		for _, it := range re.FindAllString(cont, -1) {
-			if !CFGFILE_USE_LOCAL_SMILE_PIC {
-				cont = strings.ReplaceAll(cont, it, `![`+strings.Split(it, `:`)[2]+`(https://img4.nga.178.com/ngabbs/post/smile/`+strings.ReplaceAll(getSmile(it), `"`, ``)+`)`)
-			} else {
-				smile_name := strings.Split(it, `:`)[1] + strings.TrimRight(strings.Split(it, `:`)[2], "]")
-				if strings.Contains(smile_name, "web") {
-					smile_name = smile_name + ".gif"
+			//说明是用户上传的图片，只需要把第一个<img>元素下下来，后边的是鼠标放上去的详情。
+			// stopFlag = true
+
+			// fmt.Printf("图片: %q %s\n", source, `![img](./`+fileName+`)`)
+		case "a":
+			//超链接
+			var source string
+			source, _ = s.Attr("href")
+
+			// fmt.Printf("链接: %q\n", source)
+
+			(*floor).Content += `[`
+			parseAndListStructured(s, indent+1, assets, tiezi, floor, newline, "")
+			(*floor).Content += `](` + source + `)`
+		case "div":
+			//div元素，处理居中和右对齐，代码块
+			// fmt.Printf("<%s>", goquery.NodeName(s))
+
+			// // 打印属性
+			// if attrs := s.Nodes[0].Attr; len(attrs) > 0 {
+			// 	fmt.Print(" [")
+			// 	for j, attr := range attrs {
+			// 		if j > 0 {
+			// 			fmt.Print(" ")
+			// 		}
+			// 		fmt.Printf("%s=%q", attr.Key, attr.Val)
+			// 	}
+			// 	fmt.Print("]")
+			// }
+			// fmt.Println()
+
+			//居中&右对齐
+			//左对齐也得放进来，会有一个换行的效果
+			if val, exists := s.Attr("align"); exists {
+				if val != "left" {
+					(*floor).Content += "\n" + newline + "<div style=\"text-align: " + val + "\">"
 				} else {
-					smile_name = smile_name + ".png"
+					(*floor).Content += "\n" + newline
 				}
-				prefix := CFGFILE_LOCAL_SMILE_PIC_PATH
-				if !strings.HasSuffix(prefix, "/") {
-					prefix = prefix + "/"
+				parseAndListStructured(s, indent+1, assets, tiezi, floor, newline, "")
+				if val != "left" {
+					(*floor).Content += `</div>`
 				}
-				final := prefix + smile_name
-				cont = strings.ReplaceAll(cont, it, `![`+strings.Split(it, `:`)[2]+`(`+final+`)`)
-			}
-		}
-
-		//删除线
-		//这是一个不一样的 原本是[del] [/del]（而且原来无空格）
-		cont = strings.ReplaceAll(cont, `<del class='gray'> `, `~~`)
-		cont = strings.ReplaceAll(cont, ` </del>`, `~~`)
-
-		//超链接
-		re = regexp.MustCompile(`\[url\](.+?)\[/url\]`)
-		for _, it := range re.FindAllStringSubmatch(cont, -1) {
-			cont = strings.ReplaceAll(cont, `[url]`+it[1]+`[/url]`, `[url](`+it[1]+`)`)
-		}
-		re = regexp.MustCompile(`\[url=(.+?)\](.+?)\[/url\]`)
-		for _, it := range re.FindAllStringSubmatch(cont, -1) {
-			cont = strings.ReplaceAll(cont, `[url=`+it[1]+`]`+it[2]+`[/url]`, `[`+it[2]+`](`+it[1]+`)`)
-		}
-
-		//引用
-		//下列的[b] 和[/b] 在这个接口下好像都变成了 <b> 和 </b>
-		//圈主贴
-		//(?s) 意思单行模式
-		reg_str := `(?s)\[quote\]\[tid=.+?Post by \[uid.*?\](.+)\[\/uid\].*?\((\d{4}.+?)\):</b>(.+?)\[/quote\]((?:\n){0,2})`
-		if !strings.Contains(cont, "uid=") {
-			//匿名回复，没有uid
-			reg_str = `(?s)\[quote\]\[tid=.+?Post by (.+)<span .*?\((\d{4}.+?)\):</b>(.+?)\[/quote\]((?:\n){0,2})`
-		}
-		re = regexp.MustCompile(reg_str)
-		//[1]人名 [2]时间 [3]圈的内容
-		for _, it := range re.FindAllStringSubmatch(cont, -1) {
-			quoteText := strings.ReplaceAll(it[3], "\n", "\n>")
-			quoteAuthor := it[1]
-			quoteTime := it[2]
-			if len(quoteAuthor) > 7 && quoteAuthor[:7] == `#anony_` {
-				quoteAuthor = anony(quoteAuthor)
-			} else {
-				// 拼一下，以拿到uid
-				reg_str = `\[uid=(\d+?)\]` + quoteAuthor + `\[\/uid\]`
-				re = regexp.MustCompile(reg_str)
-				it := re.FindStringSubmatch(cont)
-				if len(it) >= 2 {
-					quoteAuthor = fmt.Sprintf("%s(%s)", quoteAuthor, it[1])
-				}
-			}
-			cont = strings.ReplaceAll(cont, it[0], `>[jump](#pid0) `+quoteAuthor+`(`+quoteTime+`)`+` 说: `+quoteText+"\n\n")
-			floor.AppendPid = append(floor.AppendPid, 0)
-		}
-
-		//圈其他楼
-		//[quote][pid=684818389,36006627,6]Reply[/pid] <b>Post by [uid=42264644]Lian君并没有名字[/uid] (2023-04-18 15:46):</b><br/><br/>有发表暴论的机会？那我也来整几个[/quote]1.后宫和
-		//"[quote][pid=684833266,36008480,1]Reply[/pid] <b>Post by [uid=64575408]虹色的棉花糖[/uid] (2023-04-18 16:54):</b>\n\n上海呢[/quote]"
-		//[quote][pid=684810015,36006627,5]Reply[/pid] <b>Post by 庚雷尤甲项季<span class=\"gray\">(83楼)</span> (2023-04-18 15:08):</b><br/><br/>阿巴[/quote]
-		quoteCount := strings.Count(cont, "[quote]")
-		for i := 0; i < quoteCount; i++ {
-			//最内层的quote下标
-			quoteStartIndex := strings.LastIndex(cont, "[quote]")
-			if quoteStartIndex < 0 {
 				break
 			}
-			quoteEndIndex := quoteStartIndex + strings.Index(cont[quoteStartIndex:], "[/quote]")
-			if quoteEndIndex < 0 || quoteStartIndex >= quoteEndIndex+8 {
+
+			//代码块
+			if val, exists := s.Attr("class"); exists && val == "blockcode" {
+				(*floor).Content += "\n" + newline + "```" + "\n" + newline
+				parseAndListStructured(s, indent+1, assets, tiezi, floor, newline, "blockcode")
+				(*floor).Content += "```\n" + newline
 				break
 			}
-			clip := cont[quoteStartIndex : quoteEndIndex+8]
 
-			reg_str := `(?s)\[quote\]\[pid=(\d+?),.+?Post by \[uid.*?\](.+)\[\/uid\].*?\((\d{4}.+?)\):</b>(.+?)\[/quote\]((?:\n){0,2})`
-			if !strings.Contains(clip, "uid=") {
-				//匿名回复，没有uid
-				reg_str = `(?s)\[quote\]\[pid=(\d+?),.+?Post by (.+)<span .*?\((\d{4}.+?)\):</b>(.+?)\[/quote\]((?:\n){0,2})`
+			parseAndListStructured(s, indent+1, assets, tiezi, floor, newline, "")
+
+		case "ul":
+			//无序列表和有序列表的开始
+			listType = "unorderList"
+			if _, exists := s.Attr("type"); exists {
+				listType = "orderlist"
 			}
-			re = regexp.MustCompile(reg_str)
-			//[1]pid [2]原作者 [3]时间 [4]说的东西
-			for _, it := range re.FindAllStringSubmatch(clip, -1) {
-				cont = strings.ReplaceAll(cont, `[url=`+it[1]+`]`+it[2]+`[/url]`, `[`+it[2]+`](`+it[1]+`)`)
-				quoteText := strings.ReplaceAll(it[4], "\n", "\n>")
-				quoteAuthor := it[2]
-				quotePid := it[1]
-				quoteTime := it[3]
-				if len(quoteAuthor) > 7 && quoteAuthor[:7] == `#anony_` {
-					quoteAuthor = anony(quoteAuthor)
-				} else {
-					// 拼一下，以拿到uid
-					reg_str = `\[uid=(\d+?)\]` + quoteAuthor + `\[\/uid\]`
-					re = regexp.MustCompile(reg_str)
-					it := re.FindStringSubmatch(cont)
-					if len(it) >= 2 {
-						quoteAuthor = fmt.Sprintf("%s(%s)", quoteAuthor, it[1])
-					}
-				}
-				cont = strings.ReplaceAll(cont, it[0], `>[jump](#pid`+quotePid+`) `+quoteAuthor+`(`+quoteTime+`)`+` 说: `+quoteText+"\n\n")
-				//这里会有原文的，就不append了
+			parseAndListStructured(s, indent+1, assets, tiezi, floor, newline, listType)
+			(*floor).Content += "\n" + newline
+		case "li":
+			//无序列表和有序列表的每个条目
+			//代码块不需要额外的标记
+			if listType == "orderlist" {
+				(*floor).Content += strconv.Itoa(i+1) + ". "
+			} else if listType == "unorderList" {
+				(*floor).Content += "- "
 			}
+			parseAndListStructured(s, indent+1, assets, tiezi, floor, newline, "")
+			(*floor).Content += "\n" + newline
+		case "label":
+			//投票选项
+			(*floor).Content += strings.ReplaceAll(s.Text(), "\u00A0", " ") + "\n" + newline
+		default:
+			//其他元素
+			// fmt.Printf("<%s>", goquery.NodeName(s))
+
+			// // 打印属性
+			// if attrs := s.Nodes[0].Attr; len(attrs) > 0 {
+			// 	fmt.Print(" [")
+			// 	for j, attr := range attrs {
+			// 		if j > 0 {
+			// 			fmt.Print(" ")
+			// 		}
+			// 		fmt.Printf("%s=%q", attr.Key, attr.Val)
+			// 	}
+			// 	fmt.Print("]")
+			// }
+			// fmt.Println()
+
+			// 递归处理子节点
+			parseAndListStructured(s, indent+1, assets, tiezi, floor, newline, "")
 		}
 
-		//回复
-		reg_str = `(?s)<b>Reply to \[tid=(\d+?).+? Post by \[uid.*?\](.+)\[\/uid\].+?\((.+?)\)</b>((?:\n){0,2})`
-		if !strings.Contains(cont, "uid=") {
-			//匿名回复，没有uid
-			reg_str = `(?s)<b>Reply to \[tid=(\d+?).+? Post by (.+)<span .+?\((.+?)\)</b>((?:\n){0,2})`
+		//去掉代码块最后的“复制代码”按钮
+		if listType == "blockcode" {
+			stopFlag = true
 		}
-		re = regexp.MustCompile(reg_str)
-		//评论主楼[1]pid [2]原作者 [3]时间
-		for _, it := range re.FindAllStringSubmatch(cont, -1) {
-			quoteAuthor := it[2]
-			quoteTime := it[3]
-			if len(quoteAuthor) > 7 && quoteAuthor[:7] == `#anony_` {
-				quoteAuthor = anony(quoteAuthor)
-			} else {
-				// 拼一下，以拿到uid
-				reg_str = `\[uid=(\d+?)\]` + quoteAuthor + `\[\/uid\]`
-				re = regexp.MustCompile(reg_str)
-				it := re.FindStringSubmatch(cont)
-				if len(it) >= 2 {
-					quoteAuthor = fmt.Sprintf("%s(%s)", quoteAuthor, it[1])
-				}
-			}
-			cont = strings.ReplaceAll(cont, it[0], `>[jump](#pid0) `+quoteAuthor+`(`+quoteTime+"):\n\n")
+		//去掉图片后面的下载附件弹窗
+		if goquery.NodeName(doc) == "ignore_js_op" && goquery.NodeName(s) == "img" {
+			stopFlag = true
 		}
-		reg_str = `(?s)<b>Reply to \[pid=(\d+?),.+? Post by \[uid.*?\](.+)\[\/uid\].+?\((.+?)\)</b>((?:\n){0,2})`
-		if !strings.Contains(cont, "uid=") {
-			//匿名回复，没有uid
-			reg_str = `(?s)<b>Reply to \[pid=(\d+?),.+? Post by (.+)<span .+?\((.+?)\)</b>((?:\n){0,2})`
-		}
-		re = regexp.MustCompile(reg_str)
-		//[1]pid [2]原作者 [3]时间
-		for _, it := range re.FindAllStringSubmatch(cont, -1) {
-			quotePid := it[1]
-			quoteAuthor := it[2]
-			quoteTime := it[3]
-			if len(quoteAuthor) > 7 && quoteAuthor[:7] == `#anony_` {
-				quoteAuthor = anony(quoteAuthor)
-			} else {
-				// 拼一下，以拿到uid
-				reg_str = `\[uid=(\d+?)\]` + quoteAuthor + `\[\/uid\]`
-				re = regexp.MustCompile(reg_str)
-				it := re.FindStringSubmatch(cont)
-				if len(it) >= 2 {
-					quoteAuthor = fmt.Sprintf("%s(%s)", quoteAuthor, it[1])
-				}
-			}
-			replyedText := ":"
-			if CFGFILE_ENHANCE_ORI_REPLY {
-				replyedFloor := tiezi.findFloorByPid(cast.ToInt(quotePid))
-				if replyedFloor != nil {
-					replyedText = "说:\n>" + strings.ReplaceAll(replyedFloor.Content, "\n", "\n>")
-				}
-			}
+	})
+}
 
-			cont = strings.ReplaceAll(cont, it[0], `>[jump](#pid`+quotePid+`) `+quoteAuthor+`(`+quoteTime+")"+replyedText+"\n\n")
-			floor.AppendPid = append(floor.AppendPid, cast.ToInt(quotePid))
+/**
+ * @description: 处理加鹅信息。
+ * @param {*goquery.Selection} doc 加鹅的html对象
+ * @param {*Floor} floor 原楼层指针
+ * @return {*}
+ */
+func parseJiaGoose(doc *goquery.Selection, floor *Floor) {
+	doc.Find("tr").Each(func(i int, s *goquery.Selection) {
+		items := s.Find("td")
+		scorehtml := items.Slice(0, 1)
+		if scorehtml.Text() == "积分" {
+			return
 		}
-		floor.Content = cont
-		//到这里，fix已经结束了
+		idhtml := items.Slice(1, 2).Find("a")
+		idlink, exists := idhtml.Attr("href")
+		reasonhtml := items.Slice(3, 4)
+		// fmt.Print("@@", idlink, exists)
 
-		//判断是否有、是否有剩余下挂comment需要处理
-		if curCommentI+1 < len(oriFloor.Comments) {
-			floor = &oriFloor.Comments[curCommentI+1]
-			curCommentI++
-		} else {
-			break
+		var curGoose Goose
+		curGoose.id = idhtml.Text()
+		if exists {
+			curGoose.idlink = BASE_URL + "/2b/" + strings.TrimSuffix(strings.TrimPrefix(idlink, "\""), "\"")
 		}
+		curGoose.num = strings.TrimSuffix(strings.TrimPrefix(scorehtml.Text(), "战斗力 "), " 鹅")
+		curGoose.reason = reasonhtml.Text()
+		(*floor).JiaGoose = append((*floor).JiaGoose, curGoose)
+	})
+}
+
+/**
+ * @description: 由bbcode转md，以及下载图片、转化表情等
+ * @param {int} floor_i floor下标
+ * @return {*}
+ */
+func (tiezi *Tiezi) fixContent(floor_i int) {
+	parseAndListStructured(tiezi.Floors[floor_i].Contenthtml, 0, &tiezi.Assets, tiezi, &tiezi.Floors[floor_i], "", "")
+	if tiezi.Floors[floor_i].JiaGooseFlag {
+		parseJiaGoose(tiezi.Floors[floor_i].JiaGoosehtml, &tiezi.Floors[floor_i])
 	}
-
 }
 
 /**
@@ -646,7 +759,7 @@ func (tiezi *Tiezi) fixFloorContent(startFloor_i int) {
  * @return {*}
  */
 func (tiezi *Tiezi) genMarkdown(localMaxFloor int) {
-	folder := fmt.Sprintf("./%s/", tiezi.GetNeededFolderName())
+	folder := fmt.Sprintf("%s/", tiezi.GetNeededFolderName())
 	os.MkdirAll(folder, os.ModePerm)
 	//后续判断md文件名。假如 post.md存在则继续沿用，否则根据个性化来设置
 	mdFilePath := filepath.Join(folder, "post.md")
@@ -671,9 +784,9 @@ func (tiezi *Tiezi) genMarkdown(localMaxFloor int) {
 	defer f.Close()
 	for i := localMaxFloor; i < len(tiezi.Floors); i++ {
 		floor := &tiezi.Floors[i]
-		if floor.Lou == -1 {
+		if floor.Deleted {
 			//被抽楼了
-			continue
+			floor.Content = "[提示: 作者被禁止或删除 内容自动屏蔽]"
 		}
 
 		if floor.Pid == 0 {
@@ -684,36 +797,17 @@ func (tiezi *Tiezi) genMarkdown(localMaxFloor int) {
 			_, _ = f.WriteString(fmt.Sprintf("### %s%s\n\nMade by ngapost2md (c) ludoux [GitHub Repo](https://github.com/ludoux/ngapost2md)\n\n", tiezi.Title, authorIdOptText))
 		}
 
-		if floor.Pid == 0 && len(tiezi.HotPosts) > 0 {
-			_, _ = f.WriteString("##### 热门回复\n\n")
-			for _, v := range tiezi.HotPosts {
-				if v.Lou == -1 {
-					continue
-				}
-				content := v.Content
-				if len([]rune(content)) > 22 {
-					content = string([]rune(content)[:20]) + "..."
-				}
-				_, _ = f.WriteString(fmt.Sprintf("- [%d楼](#pid%d): %s\n", v.Lou, v.Pid, content))
-			}
-			_, _ = f.WriteString("\n")
+		isOP := ""
+		if floor.UserId == tiezi.Floors[0].UserId && tiezi.AuthorId == 0 {
+			isOP = " [楼主]"
 		}
+		_, _ = f.WriteString(fmt.Sprintf("----\n\n##### <span id=\"pid%d\">%d \\<pid:%d\\> %s by [%s](%s/2b/space-uid-%d.html)%s 精华 %d 战斗力 %d 回帖 %d 注册时间 %s</span>\n%s", floor.Pid, floor.Lou, floor.Pid, ts2t(floor.Timestamp), floor.Username, BASE_URL, floor.UserId, isOP, floor.Good, floor.Power, floor.Reply, floor.Regtime, floor.Content))
 
-		IpLocationStr := ""
-		if floor.IpLocation != "" {
-			IpLocationStr = "\\(" + floor.IpLocation + "\\)"
-		}
-
-		_, _ = f.WriteString(fmt.Sprintf("----\n\n##### <span id=\"pid%d\">%d.[%d] \\<pid:%d\\> %s by %s(%d)%s</span>\n%s", floor.Pid, floor.Lou, floor.LikeNum, floor.Pid, ts2t(floor.Timestamp), floor.Username, floor.UserId, IpLocationStr, floor.Content))
-
-		if floor.Comments != nil {
-			_, _ = f.WriteString("\n\n*---下挂评论---*")
-			for _, comment := range floor.Comments {
-				if comment.Lou <= 0 {
-					//为了评论从1楼开始，评论[0]恒为为空
-					continue
-				}
-				_, _ = f.WriteString(fmt.Sprintf("\n\n%d.[%d] \\<pid:%d\\>%s by %s(%d):\n%s", comment.Lou, comment.LikeNum, comment.Pid, ts2t(comment.Timestamp), comment.Username, comment.UserId, comment.Content))
+		//加鹅信息
+		if len(floor.JiaGoose) > 0 {
+			_, _ = f.WriteString(fmt.Sprintf("\n| 参与人数 %d | 战斗力 %s  | 理由 |\n| ------------ | ---- | ----------------------- |\n", len(floor.JiaGoose), floor.TotalGoose))
+			for _, goose := range floor.JiaGoose {
+				_, _ = f.WriteString(fmt.Sprintf("| [%s](%s) | %s | %s |\n", goose.id, goose.idlink, goose.num, goose.reason))
 			}
 		}
 
@@ -729,27 +823,27 @@ func responseController() {
 
 // 会首先调用FindFolderNameByTid，确定本地没有相关文件夹再返回指定格式文件名。否则返回本地已有文件名
 func (tiezi *Tiezi) GetNeededFolderName() string {
-	already := FindFolderNameByTid(tiezi.Tid, tiezi.AuthorId)
+	already := FindFolderNameByTid(tiezi.Tid, tiezi.AuthorId, Directory)
 	if already != "" {
 		return already
 	}
 	if CFGFILE_USE_TITLE_AS_FOLDER_NAME {
 		if tiezi.AuthorId > 0 {
-			return fmt.Sprintf("%d(%d)-%s", tiezi.Tid, tiezi.AuthorId, tiezi.TitleFolderSafe)
+			return fmt.Sprintf("%s%d(%d)-%s", Directory, tiezi.Tid, tiezi.AuthorId, tiezi.TitleFolderSafe)
 		} else {
-			return fmt.Sprintf("%d-%s", tiezi.Tid, tiezi.TitleFolderSafe)
+			return fmt.Sprintf("%s%d-%s", Directory, tiezi.Tid, tiezi.TitleFolderSafe)
 		}
 	} else {
 		if tiezi.AuthorId > 0 {
-			return fmt.Sprintf("%d(%d)", tiezi.Tid, tiezi.AuthorId)
+			return fmt.Sprintf("%s%d(%d)", Directory, tiezi.Tid, tiezi.AuthorId)
 		} else {
-			return cast.ToString(tiezi.Tid)
+			return Directory + cast.ToString(tiezi.Tid)
 		}
 	}
 }
 
 func (tiezi *Tiezi) SaveProcessInfo() {
-	folder := fmt.Sprintf("./%s/", tiezi.GetNeededFolderName())
+	folder := fmt.Sprintf("%s/", tiezi.GetNeededFolderName())
 
 	fileName := filepath.Join(folder, "process.ini")
 	cfg := ini.Empty()
@@ -760,7 +854,7 @@ func (tiezi *Tiezi) SaveProcessInfo() {
 }
 
 func (tiezi *Tiezi) SaveAssetsMap() {
-	folder := fmt.Sprintf("./%s/", tiezi.GetNeededFolderName())
+	folder := fmt.Sprintf("%s/", tiezi.GetNeededFolderName())
 
 	fileName := filepath.Join(folder, "assets.json")
 	result, err := json.Marshal(tiezi.Assets)
@@ -830,4 +924,16 @@ func (tiezi *Tiezi) Download() {
 		}
 		log.Println("本次任务结束。")
 	}
+}
+
+func Login(username string, password string) {
+	loginURL := "https://stage1st.com/2b/member.php?mod=logging&action=login&loginsubmit=yes&infloat=yes&lssubmit=yes&inajax=1&username=" + username + "&password=" + password
+
+	// 发起登录请求
+	resp, err := Client.R().
+		Post(loginURL)
+	if err != nil {
+		log.Fatalf("登录失败: %v", err)
+	}
+	log.Println("登录成功:", resp)
 }

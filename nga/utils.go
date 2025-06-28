@@ -5,12 +5,12 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/buger/jsonparser"
-	"github.com/imroc/req/v3"
 	"github.com/spf13/cast"
 )
 
@@ -22,7 +22,7 @@ func getSmile(key string) string {
 }
 
 func ts2t(ts int64) string {
-	return time.Unix(ts, 0).Format(time.DateTime)
+	return time.Unix(ts, 0).UTC().Format(time.DateTime)
 }
 
 func ts() int64 {
@@ -54,38 +54,45 @@ func anony(it string) string {
 }
 
 func downloadAssets(url string, fileName string) {
-	client := req.C()
+	// client := req.C()
 
 	// Download to the absolute file path.
-	client.R().SetOutputFile(fileName).Get(url)
+	//需要登录才能看到s1里面的一些图片，不能开新的链接
+	// Client.R().SetOutputFile(fileName).Get(url)
+	_, err := Client.R().SetOutputFile(fileName).Get(url)
+	if err != nil {
+		log.Print("下载图片失败，重试一次", url, " ## ", fileName, " ## ", err, "\n")
+		time.Sleep(time.Millisecond * time.Duration(DELAY_MS))
+		Client.R().SetOutputFile(fileName).Get(url)
+	}
 }
 
 func ToSaveFilename(in string) string {
 	//https://stackoverflow.com/questions/1976007/what-characters-are-forbidden-in-windows-and-linux-directory-names
 	rp := strings.NewReplacer(
-		"/", " ",
-		"\\", " ",
-		"<", " ",
-		">", " ",
-		":", " ",
-		"\"", " ",
-		"|", " ",
-		"?", " ",
-		"*", " ",
+		"/", "_",
+		"\\", "_",
+		"<", "_",
+		">", "_",
+		":", "_",
+		"\"", "_",
+		"|", "_",
+		"?", "_",
+		"*", "_",
 	)
 	rt := rp.Replace(in)
 	return rt
 }
 
 // 找不到时会直接返回 ""
-func FindFolderNameByTid(tid int, authorId int) string {
+func FindFolderNameByTid(tid int, authorId int, directory string) string {
 	var folderName string
 	if authorId > 0 {
 		folderName = fmt.Sprintf("%d(%d)", tid, authorId)
 	} else {
 		folderName = cast.ToString(tid)
 	}
-	fi, err := os.Stat(folderName)
+	fi, err := os.Stat(directory + folderName)
 	if err == nil && fi.IsDir() {
 		return folderName
 	} else if err != nil && !os.IsNotExist(err) {
@@ -94,11 +101,11 @@ func FindFolderNameByTid(tid int, authorId int) string {
 	}
 	//即不存在直接以 tid 命名的文件夹，接下来判断是否存在以 tid- 开头的文件夹
 	if authorId > 0 {
-		folderName = fmt.Sprintf("./%d(%d)-*", tid, authorId)
+		folderName = fmt.Sprintf("%d(%d)-*", tid, authorId)
 	} else {
-		folderName = fmt.Sprintf("./%d-*", tid)
+		folderName = fmt.Sprintf("%d-*", tid)
 	}
-	matches, err := filepath.Glob(folderName)
+	matches, err := filepath.Glob(directory + folderName)
 	if err != nil {
 		log.Fatalln(err.Error())
 		return ""
@@ -110,4 +117,47 @@ func FindFolderNameByTid(tid int, authorId int) string {
 		return ""
 	}
 	return ""
+}
+
+func TimeStringToTimestamp(timeStr string) (int64, error) {
+	// Go的参考时间：Mon Jan 2 15:04:05 -0700 MST 2006
+	layout := "2006-1-2 15:04"
+
+	t, err := time.Parse(layout, timeStr)
+	if err != nil {
+		return 0, err
+	}
+
+	return t.Unix(), nil
+}
+
+func parseNumbersWithRegex(s string) (int, int, error) {
+	// 检查是否包含 '-'
+	if !strings.HasSuffix(s, "-") {
+		return 0, 0, fmt.Errorf("字符串必须以 '-' 结尾")
+	}
+
+	// 匹配 "整数-" 或 "整数(整数)-"
+	re := regexp.MustCompile(`^(\d+)(?:\((\d+)\))?-$`)
+	match := re.FindStringSubmatch(s)
+	if match == nil {
+		return 0, 0, fmt.Errorf("格式错误")
+	}
+
+	// 解析第一个数字
+	num1, err := strconv.Atoi(match[1])
+	if err != nil {
+		return 0, 0, fmt.Errorf("第一个数字无效")
+	}
+
+	// 如果有第二个数字（括号内的部分）
+	if match[2] != "" {
+		num2, err := strconv.Atoi(match[2])
+		if err != nil {
+			return 0, 0, fmt.Errorf("第二个数字无效")
+		}
+		return num1, num2, nil
+	}
+
+	return num1, 0, nil
 }
