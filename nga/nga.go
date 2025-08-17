@@ -227,8 +227,14 @@ func (it *Floors) analyze(postlist *goquery.Selection) {
 		curFloor.Reply = reply
 
 		//注册时间
-		regtime := post.Find("div.i div.cl p").Slice(2, 3)
-		curFloor.Regtime = strings.TrimPrefix(regtime.Text(), "注册时间  ")
+		// fmt.Println("@@@@@@@@", post.Find("div.i").Text())
+		selection := post.Find("div.i div.cl p")
+		if selection.Length() >= 3 {
+			regtime := selection.Slice(2, 3)
+			curFloor.Regtime = strings.TrimPrefix(regtime.Text(), "注册时间  ")
+		} else {
+			curFloor.Regtime = "0-0-0"
+		}
 		// fmt.Println("@@@@@@@@", curFloor.Regtime)
 	})
 
