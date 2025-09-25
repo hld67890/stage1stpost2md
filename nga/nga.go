@@ -901,6 +901,10 @@ func (tiezi *Tiezi) Download() {
 			log.Println("单次下载 Page 数已达上限！本次导出完毕后需要多次重新运行才可全部导出此帖内容。")
 		}
 
+		if len(tiezi.Floors) == 0 {
+			log.Println("帖子无内容，可能已被删除。")
+			return 
+		}
 		//2. 格式化content
 		tiezi.fixFloorContent(tiezi.LocalMaxFloor + 1)
 
