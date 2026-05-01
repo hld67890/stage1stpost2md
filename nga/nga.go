@@ -78,9 +78,9 @@ type Floor struct {
 	TotalGoose   string
 	Contenthtml  *goquery.Selection
 	JiaGoosehtml *goquery.Selection
-	Good         int
-	Power        int
-	Reply        int
+	Good         string
+	Power        string
+	Reply        string
 	Regtime      string
 	Deleted      bool
 }
@@ -218,9 +218,9 @@ func (it *Floors) analyze(postlist *goquery.Selection) {
 
 		//精华战斗力回帖
 		gprElement := post.Find("div.tns table")
-		good, _ := strconv.Atoi(strings.TrimSuffix(gprElement.Children().Eq(0).Children().Eq(0).Children().Eq(0).Text(), "精华"))
-		power, _ := strconv.Atoi(strings.TrimSuffix(gprElement.Children().Eq(0).Children().Eq(0).Children().Eq(1).Text(), "战斗力"))
-		reply, _ := strconv.Atoi(strings.TrimSuffix(gprElement.Children().Eq(0).Children().Eq(0).Children().Eq(2).Text(), "回帖"))
+		good := strings.TrimSpace(strings.TrimSuffix(gprElement.Children().Eq(0).Children().Eq(0).Children().Eq(0).Text(), "精华"))
+		power := strings.TrimSpace(strings.TrimSuffix(gprElement.Children().Eq(0).Children().Eq(0).Children().Eq(1).Text(), "战斗力"))
+		reply := strings.TrimSpace(strings.TrimSuffix(gprElement.Children().Eq(0).Children().Eq(0).Children().Eq(2).Text(), "回帖"))
 		// fmt.Println("@@@@@@@@", good, power, reply)
 		curFloor.Good = good
 		curFloor.Power = power
@@ -807,7 +807,7 @@ func (tiezi *Tiezi) genMarkdown(localMaxFloor int) {
 		if floor.UserId == tiezi.Floors[0].UserId && tiezi.AuthorId == 0 {
 			isOP = " [楼主]"
 		}
-		_, _ = f.WriteString(fmt.Sprintf("----\n\n##### <span id=\"pid%d\">%d \\<pid:%d\\> %s by [%s](%s/2b/space-uid-%d.html)%s 精华 %d 战斗力 %d 回帖 %d 注册时间 %s</span>\n%s", floor.Pid, floor.Lou, floor.Pid, ts2t(floor.Timestamp), floor.Username, BASE_URL, floor.UserId, isOP, floor.Good, floor.Power, floor.Reply, floor.Regtime, floor.Content))
+		_, _ = f.WriteString(fmt.Sprintf("----\n\n##### <span id=\"pid%d\">%d \\<pid:%d\\> %s by [%s](%s/2b/space-uid-%d.html)%s 精华 %s 战斗力 %s 回帖 %s 注册时间 %s</span>\n%s", floor.Pid, floor.Lou, floor.Pid, ts2t(floor.Timestamp), floor.Username, BASE_URL, floor.UserId, isOP, floor.Good, floor.Power, floor.Reply, floor.Regtime, floor.Content))
 
 		//加鹅信息
 		if len(floor.JiaGoose) > 0 {
@@ -903,7 +903,7 @@ func (tiezi *Tiezi) Download() {
 
 		if len(tiezi.Floors) == 0 {
 			log.Println("帖子无内容，可能已被删除。")
-			return 
+			return
 		}
 		//2. 格式化content
 		tiezi.fixFloorContent(tiezi.LocalMaxFloor + 1)
